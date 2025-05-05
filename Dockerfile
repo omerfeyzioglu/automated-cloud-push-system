@@ -1,23 +1,35 @@
-# --- Dockerfile ---
+# --- Stage 1: Build the application JAR ---
+# Build aşaması için JDK içeren bir base image kullanalım (Temurin popüler bir alternatiftir)
+FROM eclipse-temurin:17-jdk-focal as builder
 
-# Temel imaj olarak hafif bir Java 17 Runtime kullanalım
-# Projeniz farklı bir Java sürümü kullanıyorsa (örn: 11), burayı güncelleyin: FROM openjdk:11-jre-slim
-FROM openjdk:17-jdk-slim
+# Çalışma dizini
+WORKDIR /workspace
 
-# Çalışma dizinini /app olarak ayarlayalım
+# Önce sadece pom.xml'i kopyala (dependency katmanını cachelemek için)
+COPY pom.xml .
+
+# Maven bağımlılıklarını indir (sadece pom değişirse bu katman yeniden çalışır)
+# Not: Maven cache'ini daha efektif kullanmak için farklı yöntemler de var.
+RUN mvn -B dependency:go-offline
+
+# Tüm proje kaynak kodunu kopyala
+COPY src ./src
+
+# Uygulamayı derle ve JAR paketini oluştur (testleri atla)
+RUN mvn -B package -DskipTests
+
+# --- Stage 2: Create the final lightweight application image ---
+# Sonuç imajı için sadece JRE içeren küçük bir base image kullanalım
+FROM eclipse-temurin:17-jre-focal
+
+# Çalışma dizini
 WORKDIR /app
 
-# Argüman olarak JAR dosyasının yerini belirtelim (Workflow'dan build edildiğinde target/*.jar olacak)
-# Bu, imaj build edilirken dışarıdan değer almayı sağlar, ancak burada varsayılan bir yol veriyoruz.
-ARG JAR_FILE=target/*.jar
+# Sadece ilk aşamada ('builder') oluşturulan JAR dosyasını kopyala
+COPY --from=builder /workspace/target/*.jar application.jar
 
-# Maven'ın oluşturduğu JAR dosyasını imajın içindeki /app dizinine application.jar olarak kopyalayalım
-COPY ${JAR_FILE} application.jar
-
-# Uygulamanın çalışacağı port (Spring Boot varsayılanı 8080)
-# Bu sadece bilgilendirme amaçlıdır, portu asıl açan uygulama veya run komutudur.
+# Uygulamanın çalışacağı port
 EXPOSE 8080
 
-# İmaj (konteyner) başlatıldığında çalıştırılacak komut
-# java -jar /app/application.jar komutunu çalıştırır
+# Konteyner başladığında uygulamayı çalıştıracak komut
 ENTRYPOINT ["java", "-jar", "application.jar"]

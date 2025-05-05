@@ -2,7 +2,7 @@
 
 # Temel imaj olarak hafif bir Java 17 Runtime kullanalım
 # Projeniz farklı bir Java sürümü kullanıyorsa (örn: 11), burayı güncelleyin: FROM openjdk:11-jre-slim
-FROM openjdk:17-jre-slim
+FROM openjdk:17-jdk-slim
 
 # Çalışma dizinini /app olarak ayarlayalım
 WORKDIR /app

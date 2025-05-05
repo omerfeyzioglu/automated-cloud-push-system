@@ -1,6 +1,6 @@
 # --- Stage 1: Build the application JAR ---
 # Build aşaması için JDK içeren bir base image kullanalım (Temurin popüler bir alternatiftir)
-FROM eclipse-temurin:17-jdk-focal as builder
+FROM maven:3-eclipse-temurin-17 as builder
 
 # Çalışma dizini
 WORKDIR /workspace

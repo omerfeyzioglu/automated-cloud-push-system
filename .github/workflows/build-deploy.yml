@@ -1,50 +1,113 @@
 # --- .github/workflows/build-deploy.yml ---
 
-# İş akışının adı (GitHub Actions arayüzünde görünür)
-name: CI Pipeline - Build Application
+# İş akışının adı
+name: CI/CD Pipeline - Build, Push Docker, Deploy JAR
 
 # İş akışını tetikleyecek olaylar
 on:
-  # 'main' branch'ine doğrudan push yapıldığında
   push:
-    branches: [ main ]
-  # 'main' branch'ine yönelik bir Pull Request açıldığında, güncellendiğinde veya kapatıldığında (birleştiğinde)
+    branches: [ main ] # Sadece main dalına push olduğunda
   pull_request:
-    branches: [ main ]
-    types: [ opened, synchronize, reopened, closed ] # 'closed' ve 'merged' kontrolü ile sadece birleşince çalışması sağlanabilir
+    branches: [ main ] # Sadece main dalına PR açıldığında/güncellendiğinde/kapatıldığında
+    types: [ opened, synchronize, reopened, closed ]
 
 # İş akışındaki işler (jobs)
 jobs:
-  # 'build-application' adında bir iş (job)
+  # === İŞ 1: Uygulamayı Derle ve JAR oluştur ===
   build-application:
-    # İşin çalışacağı işletim sistemi ortamı
+    # İşin çalışacağı ortam
     runs-on: ubuntu-latest
+    # Bu işin çıktıları (sonraki işler kullanabilsin)
+    outputs:
+      # Oluşturulan artifact'ın adını çıktı olarak veriyoruz (commit hash ile eşsiz)
+      jar_artifact_name: application-jar-${{ github.sha }}
 
-    # İşin adımları (steps)
+    # İşin adımları
     steps:
-      # 1. Adım: Depodaki kodu çalışma ortamına kopyala
+      # 1. Kodu çalışma ortamına indir (checkout)
       - name: Checkout code
-        uses: actions/checkout@v4 # Standart checkout action'ı
+        uses: actions/checkout@v4
 
-      # 2. Adım: Java Geliştirme Kiti'ni (JDK) ayarla
+      # 2. Java JDK'yı kur ve Maven cache'ini ayarla
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          java-version: '17' # Kullandığınız Java sürümüyle eşleşmeli
-          distribution: 'temurin' # Güvenilir bir JDK dağıtımı
-          cache: maven # Maven bağımlılıklarını önbelleğe alarak derleme süresini iyileştirir
+          java-version: '17' # Projenizin Java sürümüyle eşleşmeli
+          distribution: 'temurin'
+          cache: maven
 
-      # 3. Adım: Maven ile uygulamayı derle ve paketle (JAR oluştur)
+      # 3. Maven ile projeyi derle ve paketle (JAR oluştur)
       - name: Build with Maven
-        # '-B' batch modunda çalıştırır (interaktif olmayan)
-        # 'package' hedefi derleme yapar ve target/*.jar dosyasını oluşturur
         run: mvn -B package --file pom.xml
 
-      # 4. Adım: Oluşturulan JAR dosyasını bir 'artifact' olarak yükle
-      # Artifact'lar, iş akışının sonraki adımlarında veya manuel indirme için kullanılır
+      # 4. Oluşan JAR dosyasını artifact olarak yükle
       - name: Upload JAR artifact
         uses: actions/upload-artifact@v4
         with:
-          name: application-jar # Artifact'a verilecek isim
-          path: target/*.jar # Yüklenecek dosyanın yolu (Maven varsayılan olarak target klasörüne oluşturur)
-          if-no-files-found: error # Belirtilen yolda JAR dosyası bulunamazsa iş akışını başarısız yap
+          # Outputs'ta tanımlanan artifact adını kullan
+          name: ${{ steps.build-application.outputs.jar_artifact_name }}
+          path: target/*.jar # Maven'ın JAR'ı oluşturduğu yer
+          if-no-files-found: error # JAR bulunamazsa hata ver
+
+  # === İŞ 2: Docker İmajını Build Et ve Docker Hub'a Pushla ===
+  build-and-push-docker:
+    # Bu işin başlayabilmesi için 'build-application' işinin başarıyla bitmesi gerekir
+    needs: build-application
+    # İşin çalışacağı ortam
+    runs-on: ubuntu-latest
+
+    # İşin adımları
+    steps:
+      # 1. Kodu tekrar indir (farklı bir job ortamı)
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. Docker Hub'a giriş yap (GitHub Secrets kullanarak)
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }} # DOCKERHUB_USERNAME secret'ı
+          password: ${{ secrets.DOCKERHUB_TOKEN }}    # DOCKERHUB_TOKEN secret'ı
+
+      # 3. Docker imajını build et ve Docker Hub'a gönder
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: . # Dockerfile'ın proje kök dizininde olduğunu varsayar
+          push: true # İmajı Docker Hub'a gönder
+          tags: | # İmaja verilecek etiketler
+            ${{ secrets.DOCKERHUB_USERNAME }}/automated-cloud-push-system:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/automated-cloud-push-system:${{ github.sha }}
+
+  # === İŞ 3: JAR Dosyasını Buluta Kopyala (SCP ile) ===
+  deploy-jar-to-cloud:
+    # Bu işin başlayabilmesi için 'build-application' işinin başarıyla bitmesi gerekir
+    needs: build-application
+    # İşin çalışacağı ortam
+    runs-on: ubuntu-latest
+
+    # İşin adımları
+    steps:
+      # 1. 'build-application' işinde oluşturulan JAR artifact'ını indir
+      - name: Download JAR artifact
+        uses: actions/download-artifact@v4
+        with:
+          # 'build-application' işinin çıktısı olan artifact adını kullan
+          name: ${{ needs.build-application.outputs.jar_artifact_name }}
+          # Dosyalar varsayılan olarak mevcut çalışma dizinine indirilir
+
+      # 2. İndirilen dosyaları listele (Hata ayıklama için)
+      - name: List files after download
+        run: ls -R
+
+      # 3. SCP kullanarak JAR dosyasını bulut sunucusuna kopyala
+      - name: Copy file via scp
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.CLOUD_HOST }}          # CLOUD_HOST secret'ı (Public IP)
+          username: ${{ secrets.CLOUD_USERNAME }}    # CLOUD_USERNAME secret'ı (örn: ubuntu)
+          key: ${{ secrets.CLOUD_SSH_KEY }}         # CLOUD_SSH_KEY secret'ı (.pem içeriği)
+          port: 22                               # Varsayılan SSH portu
+          source: "*.jar"                         # İndirilen artifact içindeki .jar dosyasını bul
+          target: ${{ secrets.CLOUD_TARGET_PATH }}  # CLOUD_TARGET_PATH secret'ı (örn: /home/ubuntu/app)
+          strip_components: 0                     # Artifact klasör yapısına göre 0 veya 1 olabilir
